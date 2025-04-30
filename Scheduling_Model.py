@@ -1,3 +1,9 @@
+################################################
+Project: Scheduling patient from list to the given list of session
+Organisation: ESNEFT Collaboration with UoE
+Author: Madhu Sapkota
+##############################################
+
 import random
 #import simpy
 import pandas as pd  # version 2.0.3
