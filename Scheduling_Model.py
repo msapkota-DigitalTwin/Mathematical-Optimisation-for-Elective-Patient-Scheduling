@@ -1,9 +1,3 @@
-################################################
-Project: Scheduling patient from list to the given list of session
-Organisation: ESNEFT Collaboration with UoE
-Author: Madhu Sapkota
-##############################################
-
 import random
 #import simpy
 import pandas as pd  # version 2.0.3
@@ -42,6 +36,8 @@ class Scheduling_Model:
         self.CASE_START_TIME = {}
         self.schedule_new = None
         self.sessions_updated = None
+        self.consultant_procedures_template_dict = {}
+        #self.consultant_procedure_historical_count = None
         
     def generate_session_start_times(self, df_sessions):
         sessions_temp = df_sessions.copy()
@@ -177,6 +173,14 @@ class Scheduling_Model:
         
         self.patients_df = update_patient_data(patients_df, patients_data_df, fixed_data_for_patient)
 
+    def add_consultant_procedures_template(self, template_dataframe):
+        
+        self.consultant_procedures_template_dict = {
+            col: tuple(sorted(template_dataframe[col].dropna()))
+            for col in template_dataframe.columns
+        }
+
+    
     def create_schedule_with_continuous_filling(self, procedure_time_prediction_parameters = None):
         self.schedule_new, self.sessions_updated, self.patients_not_scheduled, self.sessions_all_booked =  create_schedule_and_upate_dataset(self.patients_df, self.sessions_df, predicted_times = self.TASKS_DURATION, 
                                                                                                                                              procedure_time_prediction_parameters = procedure_time_prediction_parameters, 
@@ -187,17 +191,40 @@ class Scheduling_Model:
         self.schedule_new, self.sessions_updated = convert_binary_matrix_to_schedule(temp_matrix, self, list(self.sessions_df['Session ID']), list(self.patients_df['Patient ID']), self.theatre_prpn_min)
         
                                                                                                                                              
-    def create_schedule_with_optimisation(self, optimisation_algorithm, objectives = (), weightage = None, hyper_param = {}, solutions_only =False, sessions_selection_prioritise = True):
+    def create_schedule_with_optimisation(self, 
+                          optimisation_algorithm, 
+                          objectives = (), 
+                          weightage = None, 
+                          best_solution_weightage = None,
+                          hyper_param = {}, 
+                          solutions_only =False, 
+                          sessions_selection_prioritise = True,
+                          consult_procedure_restriction = False,
+                          consult_patient_restriction = False
+                                         ):
         
-        self.schedule_new, self.sessions_updated, self.cases_not_considered, self.best_solution, _ = create_optimum_schedule(self.patients_df, self.sessions_df, self.TASKS_DURATION,
-                            self, optimisation_algorithm, 
-                            objectives = objectives, weightage = weightage, hyper_param = hyper_param, solutions_only = solutions_only, sessions_selection_prioritise = sessions_selection_prioritise)
+        self.schedule_new, self.sessions_updated, self.cases_not_considered, self.best_solution, _ , __ = create_optimum_schedule(self.patients_df,
+                            self.sessions_df, 
+                            self.TASKS_DURATION,
+                            self, 
+                            optimisation_algorithm, 
+                            objectives = objectives,                                                                
+                            weightage = weightage, 
+                            best_solution_weightage = best_solution_weightage,
+                            hyper_param = hyper_param, 
+                            solutions_only = solutions_only, 
+                            sessions_selection_prioritise = sessions_selection_prioritise,
+                            consult_procedure_restriction = consult_procedure_restriction,
+                            consult_patient_restriction = consult_patient_restriction                                             )
+        
         if optimisation_algorithm == 'Simulated Annealing':
-            self.best_kpis_list = _
+            self.pareto_archive = _
+            self.iterations_pareto_added = __
         else:
             self.scip_solver = _
         
-        if solutions_only:
-            self.patients_not_scheduled = None
-        else:
-            self.patients_not_scheduled = self.patients_df[~self.patients_df['Patient ID'].isin(self.schedule_new['Patient ID'])]
+        #if solutions_only or not best_solution_weightage:
+        #    self.patients_not_scheduled = None
+        #else:
+        if self.schedule_new is not None:
+            self.patients_not_scheduled = self.patients_df.drop(index=self.schedule_new['Patient ID'].tolist())

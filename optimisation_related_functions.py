@@ -49,8 +49,9 @@ def convert_binary_matrix_to_schedule(bin_matrix, data_obj, sessions_considered,
 
     proce_related_col = [col for col in data_obj.patients_df.columns if 'procedure' in col.lower() ][0]
     
-    schedule = pd.merge(schedule, data_obj.sessions_df[[col for col in ['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name'] if col in data_obj.sessions_df.columns]], on = 'Session ID')
-    schedule = pd.merge( data_obj.patients_df[['Patient ID', proce_related_col ]], schedule, on = 'Patient ID')
+    schedule = pd.merge(schedule, data_obj.sessions_df[['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name']], on = 'Session ID')
+    #schedule = data_obj.patients_df
+    schedule = pd.merge( data_obj.patients_df[[proce_related_col ]], schedule, left_index=True, right_on = 'Patient ID', how = 'right')
     
     # Calculate the timedelta for each row and add to the 'Scheduled Start Date/Time' column
     if prep_min is not None:
@@ -65,13 +66,15 @@ def convert_binary_matrix_to_schedule(bin_matrix, data_obj, sessions_considered,
                                                                                                            row['Planned H4 Minutes']), axis=1)
         schedule = schedule.drop(columns = ['Prepn Min', 'Prepn Min Cumulative', 'H4 Minutes Cumulative'])
 
-    sessions_updated = pd.merge( data_obj.sessions_df[[col for col in ['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name', 'Total Slot Minutes'] if col in data_obj.sessions_df]],schedule.groupby('Session ID')['Planned H4 Minutes'].sum().rename('Total Booked Minutes'), on = 'Session ID')
+    sessions_updated = pd.merge( data_obj.sessions_df[['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name', 'Total Slot Minutes']],schedule.groupby('Session ID')['Planned H4 Minutes'].sum().rename('Total Booked Minutes'), on = 'Session ID')
     sessions_updated = sessions_updated[sessions_updated['Session ID'].isin(sessions_considered)]
     sessions_updated['Session Utilisation'] = sessions_updated['Total Booked Minutes']/sessions_updated['Total Slot Minutes']
     sessions_updated['Session Utilisation'] = sessions_updated['Session Utilisation'].round(3)
     if len(data_obj.TASKS_DURATION_DEVIATION_RATIO_CHANCES_MEAN_SD.keys()) >= len(data_obj.CASES):
-        from data_processing_nd_encoding_related_functions import read_z_table
-        z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+        
+        #from data_processing_nd_encoding_related_functions import read_z_table
+        #z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+        z_cdf_data = read_z_table()
         #from optimisation_related_functions import session_over_running_chances
         if bin_matrix is not None:
             session_overrnning_chances = session_over_running_chances(data_obj, pred_model_types= None, task_repeating_count = None, analytics_based = True, prep_min = prep_min, cdf_table_data = z_cdf_data, individual = bin_matrix.T.flatten())
@@ -90,7 +93,8 @@ def convert_cases_length_arr_to_schedule(sol_arr, data_obj, prep_min = None, cas
         schedule = pd.DataFrame([(session , data_obj.CASES[case_ind],  data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]) for case_ind, session in enumerate(sol_arr) if session!=-1], columns = [ 'Session ID', 'Patient ID','Planned H4 Minutes'])
     
     schedule = pd.merge(schedule, data_obj.sessions_df[['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name']], on = 'Session ID')
-    schedule = pd.merge( data_obj.patients_df[['Patient ID', 'Procedure Code']], schedule, on = 'Patient ID')
+    proce_related_col = [col for col in data_obj.patients_df.columns if 'procedure' in col.lower() ][0]
+    schedule = pd.merge( data_obj.patients_df[[proce_related_col ]], schedule, left_index=True, right_on = 'Patient ID', how = 'right')
     
     # Calculate the timedelta for each row and add to the 'Scheduled Start Date/Time' column
     if prep_min is not None:
@@ -105,13 +109,14 @@ def convert_cases_length_arr_to_schedule(sol_arr, data_obj, prep_min = None, cas
                                                                                                            row['Planned H4 Minutes']), axis=1)
         schedule = schedule.drop(columns = ['Prepn Min', 'Prepn Min Cumulative', 'H4 Minutes Cumulative'])
 
-    sessions_updated = pd.merge( data_obj.sessions_df[[col for col in ['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name', 'Total Slot Minutes'] if col in data_obj.sessions_df]],schedule.groupby('Session ID')['Planned H4 Minutes'].sum().rename('Total Booked Minutes'), on = 'Session ID')
+    sessions_updated = pd.merge( data_obj.sessions_df[['Session ID', 'Session Planned Start Date/Time', 'Consultant Code', 'Theatre Name', 'Total Slot Minutes']],schedule.groupby('Session ID')['Planned H4 Minutes'].sum().rename('Total Booked Minutes'), on = 'Session ID')
     #sessions_updated = sessions_updated[sessions_updated['Session ID'].isin(sessions_considered)]
     sessions_updated['Session Utilisation'] = sessions_updated['Total Booked Minutes']/sessions_updated['Total Slot Minutes']
     sessions_updated['Session Utilisation'] = sessions_updated['Session Utilisation'].round(2)
     if len(data_obj.TASKS_DURATION_DEVIATION_RATIO_CHANCES_MEAN_SD.keys()) >= len(data_obj.CASES):
-        from data_processing_nd_encoding_related_functions_old import read_z_table
-        z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+        #from data_processing_nd_encoding_related_functions_old import read_z_table
+        #z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+        z_cdf_data = read_z_table()
         if sol_arr is not None:
             binary_array = np.zeros((len(sol_arr), len(data_obj.SESSIONS)), dtype=int)
             # Fill the binary array
@@ -130,9 +135,19 @@ def convert_cases_length_arr_to_schedule(sol_arr, data_obj, prep_min = None, cas
 
 
 
-def create_optimum_schedule(patients_df, sessions_timeslot_df, possible_task_durations_df,
-                            data_obj, optimisation_algorithm,
-                            objectives = (), weightage = None, hyper_param = {}, solutions_only =False, sessions_selection_prioritise = False):
+def create_optimum_schedule(patients_df, sessions_timeslot_df, 
+                            possible_task_durations_df,
+                            data_obj, 
+                            optimisation_algorithm,
+                            objectives = (), 
+                            weightage = None, 
+                            best_solution_weightage = None, 
+                            hyper_param = {}, 
+                            solutions_only =False, 
+                            sessions_selection_prioritise = False,
+                            consult_procedure_restriction = False,
+                            consult_patient_restriction = False
+                           ):
     """
     Generate an optimum schedule based on the provided inputs and constraints.
 
@@ -161,8 +176,14 @@ def create_optimum_schedule(patients_df, sessions_timeslot_df, possible_task_dur
         # Solve the optimization problem
         if 'mip' in optimisation_algorithm.lower() or 'scip' in optimisation_algorithm.lower():
             optimisation_solutions = solve_optimisation_problem_with_MIP_solver(
-                data_obj, possible_task_durations_df, objectives = objectives,
-                obj_weightage = weightage, hyper_param = hyper_param)
+                data_obj, 
+                possible_task_durations_df, 
+                objectives = objectives,
+                obj_weightage = weightage,
+                hyper_param = hyper_param,
+                consider_consult_procedure_combination = consult_procedure_restriction,
+                consider_consult_patient_combination = consult_patient_restriction
+            )
 
             if optimisation_solutions[0] is not None:
                 '''
@@ -176,12 +197,18 @@ def create_optimum_schedule(patients_df, sessions_timeslot_df, possible_task_dur
                     schedule_new = None
                     sessions_updated = None
                 else:
-                    schedule_new, sessions_updated = convert_binary_matrix_to_schedule(None, data_obj, data_obj.SESSIONS, data_obj.CASES, prep_min = data_obj.theatre_prpn_min, cases_not_considered = optimisation_solutions[-2])
+                    schedule_new, sessions_updated = convert_binary_matrix_to_schedule(None, 
+                                            data_obj, 
+                                            data_obj.SESSIONS, 
+                                            data_obj.CASES, 
+                                            prep_min = data_obj.theatre_prpn_min,
+                                            cases_not_considered = optimisation_solutions[-2]
+                                            )
     
-                return schedule_new, sessions_updated, optimisation_solutions[1],  optimisation_solutions[0], optimisation_solutions[-1]
+                return schedule_new, sessions_updated, optimisation_solutions[1],  optimisation_solutions[0], optimisation_solutions[-1], None
             else:
                 data_label.config(text="Failed Schedule generation")
-                return None, None, None, None, None
+                return None, None, None, None, None, None
 
         elif 'simulated' in optimisation_algorithm.lower():
             
@@ -227,33 +254,45 @@ def create_optimum_schedule(patients_df, sessions_timeslot_df, possible_task_dur
             '''
             #data_obj.session_max_util = theatre_max_util
             
-            best_solution, best_kpis, best_kpis_list, pareto_archive, iterations = simulated_annealing(solution_init, data_obj, case_index_not_considered, 
-                                                                                       objectives = objectives, 
-                                                                                       Obj_weightage = weightage, 
-                                                                                       INITIAL_TEMPERATURE = hyper_param['INITIAL_TEMPERATURE'], 
-                                                                                       ALPHA = hyper_param['ALPHA'], 
-                                                                                       FINAL_TEMPERATURE = hyper_param['FINAL_TEMPERATURE'],
-                                                                                       MAX_ITERATIONS = hyper_param['MAX_ITERATIONS'], 
-                                                                                       theatre_prp_min = data_obj.theatre_prpn_min,
-                                                                                                      consider_session_filled_ratio = sessions_selection_prioritise)
+            pareto_archive, iterations_aaded_paretos = simulated_annealing_with_paretos(solution_init, data_obj,
+                           case_index_not_considered, 
+                           objectives = objectives, 
+                           Obj_weightage = weightage, 
+                           INITIAL_TEMPERATURE = hyper_param['INITIAL_TEMPERATURE'], 
+                           ALPHA = hyper_param['ALPHA'], 
+                           FINAL_TEMPERATURE = hyper_param['FINAL_TEMPERATURE'],
+                           MAX_ITERATIONS = hyper_param['MAX_ITERATIONS'], 
+                           theatre_prp_min = data_obj.theatre_prpn_min,
+                           consider_session_filled_ratio = sessions_selection_prioritise,
+                           consider_consult_procedure_combination = consult_procedure_restriction,
+                           consider_consult_patient_combination = consult_patient_restriction
+                            )
  
-            print(f'Solution with Simulated annealing is reached after {iterations} iterations')
-            print(f'Objective value for reached solution: {best_kpis}')
+            #print(f'Solution with Simulated annealing is reached after {iterations} iterations')
+            #print(f'Objective value for reached solution: {best_kpis}')
+
+            best_solution = None
+            best_schedule= None
+            sessions_updated = None
+
+            #if solutions_only or not best_solution_weightage:
+                
+            if not solutions_only and best_solution_weightage:
+                best_weighted_KPI = 0
+                for solution in pareto_archive:
+                    if best_weighted_KPI < sum([a*b for a, b in zip(solution['f'], best_solution_weightage)]) :
+                        best_solution = solution['x']
             
-            for task, value in zip(data_obj.TASKS, best_solution.T.flatten()):
-                data_obj.TASKS_ASSIGNED[task] = value
-            
-            if solutions_only:
-                best_schedule= None
-                sessions_updated = None
-            else:
+                for task, value in zip(data_obj.TASKS, best_solution.T.flatten()):
+                    data_obj.TASKS_ASSIGNED[task] = value
+                
                 best_schedule, sessions_updated = convert_binary_matrix_to_schedule(best_solution, data_obj, data_obj.SESSIONS, data_obj.CASES, prep_min= data_obj.theatre_prpn_min)
 
-            return best_schedule, sessions_updated, cases_not_considered, best_solution, best_kpis_list
+            return best_schedule, sessions_updated, cases_not_considered, best_solution, pareto_archive, iterations_aaded_paretos
 
     except Exception as e:
         print(f"Error: {e}")
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
 
 
@@ -385,27 +424,47 @@ def objective3_cases_length_variable(individual, data_obj):
 
 
 
-def satisfies_constraints(model, individual = None, cases_to_skip = []):
+def satisfies_constraints(model, individual = None, cases_to_skip = [], specific_sessions = [], cases_repetition_test = True):
     # Implement constraint checking logic here
         #Evaluate SESSION_ASSIGNMENT constraint
+    if len(specific_sessions) == 0:
+        specific_sessions = model.SESSIONS
     if individual is not None:
         for task, value in zip(model.TASKS, individual):
             model.TASKS_ASSIGNED[task] = value
-    
-    for case in model.CASES:
-        if case in cases_to_skip:
-            continue
-        constraint_check = session_assignment_constraint(model, case)
-        if not constraint_check[0]:
-            return False  
+
+    if cases_repetition_test:
+        for case in model.CASES:
+            if case in cases_to_skip:
+                continue
+            constraint_check = session_assignment_constraint(model, case)
+            if not constraint_check[0]:
+                return False  
                 
-    for session in model.SESSIONS:
+    for session in specific_sessions:
         constraint_check = cases_total_duration_for_session(model, session, cases_to_skip)
         if not constraint_check[0]:
             return False 
                 
     return True
 
+
+
+def satisfies_soft_constraints(model, solution_2d_arr, sessions_index_for_checking, proce_col):
+    # Implement constraint checking logic here
+        #Evaluate SESSION_ASSIGNMENT constraint
+    for i in sessions_index_for_checking:
+        consultant = model.sessions_df.iloc[i]['Consultant Code']
+        for j, procedure in enumerate(model.patients_df[proce_col]):
+            if solution_2d_arr[i,j] == 0:
+                continue
+            if not consultant in model.consultant_procedures_template_dict or not procedure in model.consultant_procedures_template_dict[consultant]:
+                return False 
+                
+    return True
+
+
+    
 
 def is_sum_less_or_equal_to_requirement(lst, threshold):
     total = 0
@@ -547,7 +606,13 @@ def session_over_running_chances(model, pred_model_types = None, task_repeating_
 
 
 # Neighbor Solution: Generate a neighboring solution by either swapping cases between sessions or adding an unassigned case to a session
-def neighbor_solution(solution, unassigned_cases_indices, num_sessions, num_cases, cases_indices_to_skip, sessions_fill_ratio = None):
+def neighbor_solution(solution, 
+                      unassigned_cases_indices, 
+                      num_sessions, 
+                      num_cases, 
+                      cases_indices_to_skip, 
+                      sessions_fill_ratio = None
+                     ):
     new_solution = solution.copy()  # Deep copy the current solution
     # only adding once case in any random session
     #adding_criteria = 1-np.mean(sessions_fill_ratio) if sessions_fill_ratio is not None else 0.7
@@ -627,12 +692,14 @@ def pareto_dominates(kpis1, kpis2):
 
 
 
+
 def simulated_annealing(solution_init, data_obj, case_index_not_considered = [], objectives = ('objective1',), Obj_weightage = None, INITIAL_TEMPERATURE = 1000, ALPHA = 0.99, FINAL_TEMPERATURE = 0.001, MAX_ITERATIONS = 100000, theatre_prp_min = 7.5, consider_session_filled_ratio = False):
     # Ensure initial solution satisfies constraints
     
     print('Running Optimisation Problem with Simulated Annealing Algorithm')
     
-    z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+    #z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+    z_cdf_data = read_z_table()
     solution = solution_init.copy()
 
     cases_not_considered = [data_obj.CASES[i] for i in case_index_not_considered]
@@ -689,7 +756,7 @@ def simulated_annealing(solution_init, data_obj, case_index_not_considered = [],
         
         #if pareto_basis:
         if pareto_dominates(new_kpis, current_kpis):
-            acceptance_probability = 1.0
+            acceptance_probability = [1.0]*kpis_length
             
             # Update the best solution found so far
             
@@ -699,10 +766,10 @@ def simulated_annealing(solution_init, data_obj, case_index_not_considered = [],
                 pareto_archive.append(current_kpis)
         else:
             # Calculate an acceptance probability based on a combination of objectives
-            acceptance_probability = math.exp(sum(np.array(new_kpis) - np.array(current_kpis)) / temperature)
+            acceptance_probability = [math.exp((new_kpi - current_kpi) / temperature) for new_kpi, current_kpi in zip(new_kpis, current_kpis)]
         
         # Decide whether to accept the new solution
-        if random.random() < acceptance_probability:
+        if all(random.random() < prob for prob in acceptance_probability):
             solution = new_solution.copy()
             current_kpis = new_kpis
             prev_unassigned_cases_indices = new_unassigned_cases_indices
@@ -721,15 +788,28 @@ def simulated_annealing(solution_init, data_obj, case_index_not_considered = [],
     
     return best_solution, best_kpis, best_KPIS_list, pareto_archive, iterations
     
-    
 
 
-def simulated_annealing_old(solution_init, data_obj, case_index_not_considered = [], objectives = ('objective1',), Obj_weightage = None, INITIAL_TEMPERATURE = 1000, ALPHA = 0.99, FINAL_TEMPERATURE = 0.001, MAX_ITERATIONS = 100000, theatre_prp_min = 7.5):
+def simulated_annealing_with_paretos(solution_init, 
+                                     data_obj, 
+                                     case_index_not_considered = [], 
+                                     objectives = ('objective1',), 
+                                     Obj_weightage = None,
+                                     INITIAL_TEMPERATURE = 100000, 
+                                     ALPHA = 0.999, 
+                                     FINAL_TEMPERATURE = 0.001, 
+                                     MAX_ITERATIONS = 100000, 
+                                     theatre_prp_min = 7.5, 
+                                     consider_session_filled_ratio = False,
+                                     consider_consult_procedure_combination = False,
+                                     consider_consult_patient_combination = False
+                                     ):
     # Ensure initial solution satisfies constraints
     
     print('Running Optimisation Problem with Simulated Annealing Algorithm')
     
-    z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+    #z_cdf_data = read_z_table('Z_table_positive.xlsx') | read_z_table('Z_table_negative.xlsx')
+    z_cdf_data = read_z_table()
     solution = solution_init.copy()
 
     cases_not_considered = [data_obj.CASES[i] for i in case_index_not_considered]
@@ -737,116 +817,142 @@ def simulated_annealing_old(solution_init, data_obj, case_index_not_considered =
     if not satisfies_constraints(data_obj, individual = list(solution.T.flatten()), cases_to_skip=cases_not_considered):
         raise ValueError("Initial solution is invalid.")
 
-    best_solution = solution
-
+    #best_solution = solution
+    
+    #each_session_obj1 = {session:1/data_obj.SESSION_DURATION[session] * sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]]* solution[sess_ind, case_ind] ) for sess_ind, session in enumerate(data_obj.SESSIONS)}
+    #return 1/data_obj.SESSION_DURATION[session] * sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[], session] ])
+    if consider_session_filled_ratio:
+        each_session_obj1 = [1/data_obj.SESSION_DURATION[session] * sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]* solution_init[sess_ind, case_ind] for case_ind in range(len(data_obj.CASES)) ]) for sess_ind, session in enumerate(data_obj.SESSIONS)]
+    else:
+        each_session_obj1 = None
+    
+    #print(each_session_obj1)
     temperature = INITIAL_TEMPERATURE
     iterations = 0
     n_cases = len(data_obj.CASES)
     n_sessions = len(data_obj.SESSIONS)
     
-    multi_objectives_solving = Obj_weightage is None or len(objectives) > len(Obj_weightage)
+    #multi_objectives_solving = Obj_weightage is None or len(objectives) > len(Obj_weightage)
+    #multi_objectives_solving = True
+    kpis_length = len(objectives) if Obj_weightage is None else len(objectives)-len(Obj_weightage.keys()) + 1
     
-    if multi_objectives_solving:
-        #current_value = multi_objectives_balanced(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, individual = solution.T.flatten())
-        current_kpis = multi_objectives(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, prep_min= theatre_prp_min, cdf_table_data = z_cdf_data, individual = solution_init.T.flatten())
-        #current_value = objective1_utilisation(data_obj, individual = solution.T.flatten(), cases_to_skip=cases_not_considered)
-        
-        best_kpis = current_kpis
-        pareto_archive = [current_kpis]
+    #if multi_objectives_solving:
+    #current_value = multi_objectives_balanced(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, individual = solution.T.flatten())
+    current_kpis = multi_objectives(data_obj, None, 0, 
+                                    cases_to_skip = cases_not_considered, 
+                                    objectives_list = objectives, 
+                                    weightage = Obj_weightage, 
+                                    prep_min= theatre_prp_min, 
+                                    cdf_table_data = z_cdf_data, 
+                                    individual = solution_init.T.flatten()
+                                   )
+    #current_value = objective1_utilisation(data_obj, individual = solution.T.flatten(), cases_to_skip=cases_not_considered)
+    current_kpis = [round(_, 4) for _ in current_kpis]
     
-        while temperature > FINAL_TEMPERATURE and iterations < MAX_ITERATIONS:
-            iterations += 1
-            
-            # Generate a neighboring solution by swapping a case between sessions
-            unassigned_cases_indices = [i for i in range(n_cases) if i not in case_index_not_considered and np.sum(solution[:,i]) == 0]
-            new_solution = neighbor_solution(solution, unassigned_cases_indices, n_sessions, n_cases, cases_indices_to_skip = case_index_not_considered)
-            
-            # Check if the solution is feasible
-            if satisfies_constraints(data_obj, individual = new_solution.T.flatten(), cases_to_skip=cases_not_considered):
-                #new_value = objective1_utilisation(data_obj, individual = new_solution.T.flatten(), cases_to_skip=cases_not_considered)
-                new_kpis = multi_objectives(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, prep_min= theatre_prp_min, cdf_table_data = z_cdf_data, individual = new_solution.T.flatten())
-            
-            else:
-                new_kpis = [float('-inf')]* len(current_kpis)  # Invalid solutions should have a very low value
-            
-            #if pareto_basis:
-            if pareto_dominates(new_kpis, current_kpis):
-                acceptance_probability = 1.0
-                
-                # Update the best solution found so far
-                
-                if pareto_dominates(new_kpis, best_kpis):
-                    best_solution = new_solution.copy()
-                    best_kpis = new_kpis
-                    pareto_archive.append(current_kpis)
-            else:
-                # Calculate an acceptance probability based on a combination of objectives
-                acceptance_probability = math.exp(sum(np.array(new_kpis) - np.array(current_kpis)) / temperature)
-            
-            # Decide whether to accept the new solution
-            if random.random() < acceptance_probability:
-                solution = new_solution.copy()
-                current_kpis = new_kpis
+    #best_kpis = current_kpis
+    pareto_archive = [{'x': solution , 'f':current_kpis}]
+    #best_KPIS_list = [current_kpis]
 
-            # Cool down
-            temperature *= ALPHA
+    prev_unassigned_cases_indices = [i for i in range(n_cases) if i not in case_index_not_considered and np.sum(solution[:,i]) == 0]
 
-            if iterations%100 == 0:
-                print(f'{iterations}th iterations is completed with best solution value reached {best_kpis}')
+    iterations_candidate_pareto_KPIs = {}
+    soft_constraints_pass = True
+
+    proce_related_col = [col for col in data_obj.patients_df.columns if 'procedure' in col.lower()][0]
+
+    while temperature > FINAL_TEMPERATURE and iterations < MAX_ITERATIONS:
+        iterations += 1
         
-        return best_solution, best_kpis, pareto_archive, iterations
-    else:
-        #current_value = multi_objectives_balanced(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, individual = solution.T.flatten())
-        current_value = multi_objectives(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, prep_min= theatre_prp_min, cdf_table_data = z_cdf_data, individual = solution_init.T.flatten())[0]
-        #current_value = objective1_utilisation(data_obj, individual = solution.T.flatten(), cases_to_skip=cases_not_considered)
-
-        best_value = current_value
-
-        best_values = [best_value]
+        # Generate a neighboring solution by swapping a case between sessions
+        new_unassigned_cases_indices = [_ for _ in prev_unassigned_cases_indices]
         
-        while temperature > FINAL_TEMPERATURE and iterations < MAX_ITERATIONS:
-            iterations += 1
-            
-            # Generate a neighboring solution by swapping a case between sessions
-            unassigned_cases_indices = [i for i in range(n_cases) if i not in case_index_not_considered and np.sum(solution[:,i]) == 0]
-            new_solution = neighbor_solution(solution, unassigned_cases_indices, n_sessions, n_cases, cases_indices_to_skip = case_index_not_considered)
-            
-            # Check if the solution is feasible
-            if satisfies_constraints(data_obj, individual = new_solution.T.flatten(), cases_to_skip=cases_not_considered):
-                #new_value = objective1_utilisation(data_obj, individual = new_solution.T.flatten(), cases_to_skip=cases_not_considered)
-                new_value = multi_objectives(data_obj, None, 0, cases_to_skip = cases_not_considered, objectives_list = objectives, weightage = Obj_weightage, prep_min= theatre_prp_min, cdf_table_data = z_cdf_data, individual = new_solution.T.flatten())[0]
-            
-            else:
-                new_value = float('-inf')  # Invalid solutions should have a very low value
-            
-            # Calculate the acceptance probability
-            if new_value > current_value:
-                acceptance_probability = 1.0
-                # Update the best solution found so far
-                if new_value > best_value:
-                    best_solution = new_solution.copy()
-                    best_value = new_value
-                    best_values.append(new_value)
-            else:
-                acceptance_probability = math.exp((new_value - current_value) / temperature)
-            
-            # Decide whether to accept the new solution
-            if random.random() < acceptance_probability:
-                solution = new_solution.copy()
-                current_value = new_value
-            
-            # Cool down
-            temperature *= ALPHA
-
-            if iterations%100 == 0:
-                print(f'{iterations}_th iterations is completed with best solution value reached: {best_value}')
+        new_solution, changed_sessions_indices = neighbor_solution(
+                   solution,
+                   new_unassigned_cases_indices, 
+                   n_sessions, 
+                   n_cases, 
+                   cases_indices_to_skip = case_index_not_considered, 
+                   sessions_fill_ratio = each_session_obj1
+                      )
+        #new_solution, changed_sessions_indices = neighbor_solution(solution, new_unassigned_cases_indices, n_sessions, n_cases, cases_indices_to_skip = case_index_not_considered, sessions_fill_ratio = None)
+        if consider_consult_procedure_combination:
+            soft_constraints_pass = satisfies_soft_constraints(
+                data_obj,
+                new_solution,
+                sessions_index_for_checking,
+                procedure_related_col
+            )
+        # Check if the solution is feasible
+        if soft_constraints_pass and satisfies_constraints(data_obj, 
+                                           individual = new_solution.T.flatten(),
+                                           cases_to_skip=cases_not_considered,
+                                           specific_sessions = [data_obj.SESSIONS[_] for _ in changed_sessions_indices],
+                                           cases_repetition_test = False
+                                            ):
+            #new_value = objective1_utilisation(data_obj, individual = new_solution.T.flatten(), cases_to_skip=cases_not_considered)
+            new_kpis = multi_objectives(data_obj, None, 0, 
+                                        cases_to_skip = cases_not_considered, 
+                                        objectives_list = objectives, 
+                                        weightage = Obj_weightage, 
+                                        prep_min= theatre_prp_min, 
+                                        cdf_table_data = z_cdf_data, 
+                                        #individual = new_solution.T.flatten()
+                                       )
+            new_kpis = [round(_, 4) for _ in new_kpis]
+        else:
+            new_kpis = [float('-inf')]* kpis_length  # Invalid solutions should have a very low value
         
-        return best_solution, best_value, best_values, iterations
+        #if pareto_basis:
+        #if pareto_dominates(new_kpis, current_kpis):
+        #    acceptance_probability = [1.0]*kpis_length
+            
+            # Update the best solution found so far
+            
+            #if pareto_dominates(new_kpis, best_kpis):
+            #    best_solution = new_solution.copy()
+            #    best_kpis = new_kpis
+            #pareto_archive.append(current_kpis)
+        #else:
+            # Calculate an acceptance probability based on a combination of objectives
+            #acceptance_probability = [math.exp((new_kpi - current_kpi) / temperature) for new_kpi, current_kpi in zip(new_kpis, current_kpis)]
+        acceptance_probability = [1.0 if new >= current else math.exp((new - current) / temperature) for new, current in zip(new_kpis, current_kpis)]
+        
+        # Decide whether to accept the new solution
+        if any(random.random() < prob for prob in acceptance_probability):
+            
+            solution = new_solution.copy()
+            current_kpis = new_kpis
+            prev_unassigned_cases_indices = new_unassigned_cases_indices
+            if consider_session_filled_ratio:
+                for sess_ind in changed_sessions_indices:
+                    session = data_obj.SESSIONS[sess_ind]
+                    each_session_obj1[sess_ind] = min(0.9, sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]* solution[sess_ind, case_ind] for case_ind in range(len(data_obj.CASES)) ]))
+
+            pareto_archive, pareto_changed = update_pareto_archive(pareto_archive, {'x': solution, 'f':current_kpis})
+
+            if pareto_changed:
+                iterations_candidate_pareto_KPIs[iterations] = current_kpis
+        # Cool down
+        temperature *= ALPHA
+
+        if iterations%100 == 0:
+            print(f'{iterations}th iterations is completed with current solution value reached {current_kpis}')
+        
+        #best_KPIS_list.append(best_kpis)
+    
+    return pareto_archive, iterations_candidate_pareto_KPIs
 
 
 
-def solve_optimisation_problem_with_MIP_solver(data_obj, possible_task_durations_df = None, objectives = (), 
-                                               obj_weightage = {'objective1':0.75, 'objective2':0.2, 'objective3':0.25}, hyper_param = {}):
+def solve_optimisation_problem_with_MIP_solver(data_obj,
+                    possible_task_durations_df = None, 
+                    objectives = (), 
+                    obj_weightage = {'objective1':0.75, 'objective2':0.2, 'objective3':0.25}, 
+                    hyper_param = {},
+                    consider_consult_procedure_combination = False,
+                    consider_consult_patient_combination = False
+                    ):
+    
     for task in data_obj.TASKS:
         data_obj.add_TASKS_ASSIGNED_variable(task,0)
     
@@ -877,6 +983,32 @@ def solve_optimisation_problem_with_MIP_solver(data_obj, possible_task_durations
                     if not j in case_index_not_considered:
                         case_index_not_considered.append(j)
                 #durations[i, j] = math.ceil(durations[i, j] / 5) * 5
+
+    if consider_consult_procedure_combination:
+        proce_related_col = [col for col in data_obj.patients_df.columns if 'procedure' in col.lower()][0]
+        consultant_procedure_possibility = np.zeros((s, n), dtype=int)
+        for i, session_consultant in enumerate(data_obj.sessions_df['Consultant Code']):
+            #session = session_row['Session ID']
+            if not session_consultant in data_obj.consultant_procedures_template_dict:
+                continue
+            for j, case in enumerate(data_obj.CASES):
+                related_procedure = data_obj.patients_df.loc[case, proce_related_col]
+                if related_procedure in data_obj.consultant_procedures_template_dict[session_consultant]:
+                    consultant_procedure_possibility[i, j] = 1
+
+        consultant_procedure_possibility = np.delete(consultant_procedure_possibility, case_index_not_considered, axis=1)
+
+    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
+        consultant_patient_possibility = np.zeros((s, n), dtype=int)
+        for i, session_consultant in enumerate(data_obj.sessions_df['Consultant Code']):
+            for j, case in enumerate(data_obj.CASES):
+                #related_procedure = data_obj.patients_df.loc[case, proce_related_col]
+                consultant_required = data_obj.patients_df.loc[case, 'Consultant Code']
+                if pd.notna(consultant_required) and consultant_required == session_consultant:
+                    consultant_patient_possibility[i, j] = 1
+
+        consultant_patient_possibility = np.delete(consultant_patient_possibility, case_index_not_considered, axis=1)
+        
             
     durations = np.delete(durations, case_index_not_considered, axis=1)
     #duration_ratio_chances_mean = np.delete(duration_ratio_chances_mean, case_index_not_considered, axis=1)
@@ -973,11 +1105,24 @@ def solve_optimisation_problem_with_MIP_solver(data_obj, possible_task_durations
 
     
     # Constraints
+
+    #consultant procedure constraints
+    if consider_consult_procedure_combination:
+        for j in range(n):
+            for i in range(s):
+                if consultant_procedure_possibility[i,j] == 0:
+                    opti_model.addCons(x[i, j] == 0)
+    
+    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
+        for j in range(n):
+            for i in range(s):
+                if consultant_patient_possibility[i,j] == 0:
+                    opti_model.addCons(x[i, j] == 0)
+                    
     # Each event is assigned to at most one slot
     for j in range(n):
         opti_model.addCons(
-            sum(x[i, j] for i in range(s)) <= 1,
-            name=f"CASE_{j+1}_Assignment")
+            sum(x[i, j] for i in range(s)) <= 1)
         #opti_model.addCons(n_x <= T_session[i]/95)
     
     # The total duration of the events assigned to each slot does not exceed the available time
@@ -991,8 +1136,9 @@ def solve_optimisation_problem_with_MIP_solver(data_obj, possible_task_durations
         #sum(durations[i][j] * x[i, j] for j in range(n)) <= int(T[i] * data_obj.session_max_util / 5) * 5,
         opti_model.addCons(t_x <= int(T_session[i]* data_obj.session_max_util / 5) * 5)
         #opti_model.addCons(quicksum(duration_ratio_chances_mean[i, j] * x[i, j] * durations[i, j] for j in range(n)) <= int(T_session[i]* data_obj.session_max_util / 5) * 5)
-        opti_model.addCons(n_x * 1 >= 1)
-        opti_model.addCons(n_x <= T_session[i]/95)   # to avoid overpopulating the session with lesser time requiring procedures
+        #opti_model.addCons(n_x * 1 >= 1)
+        #opti_model.addCons(n_x <= T_session[i]/95)   
+        opti_model.addCons(n_x <=max(3,min(round(T_session[i]/max(80, np.mean(durations[i,:])),0),7))) # to avoid overpopulating the session with lesser time requiring procedures
         #opti_model.addCons(t_x + (n_x + 1.5) * data_obj.theatre_prep_min /5)*5 <= T_session[i])   # limiting total time to prepn + surgical time
         #opti_model.addCons(t_x + n_x * data_obj.theatre_prep_min <= T_session[i] - np.ceil(1.5 * data_obj.theatre_prep_min/5)*5 ) # limiting total time to prepn + surgical time
         
@@ -1067,6 +1213,19 @@ class LogEventHandler(Eventhdlr):
              # Print progress information
             print(f"Node {node_id}, Objective Value {obj_val}, Time Elapsed {time_elapsed}")
                 
-           
+
+from typing import Tuple
 
 
+#def update_pareto_archive(archive: list[dict], candidate: dict) -> Tuple[list[dict], bool]:
+def update_pareto_archive(archive, candidate ):
+    new_archive = []
+    updated = False
+    for sol in archive:
+        if pareto_dominates(candidate["f"], sol["f"]):
+            continue  # candidate dominates → remove sol
+        if pareto_dominates(sol["f"], candidate["f"]):
+            return archive, False  # candidate is dominated → discard
+        new_archive.append(sol)
+    new_archive.append(candidate)
+    return new_archive, True
