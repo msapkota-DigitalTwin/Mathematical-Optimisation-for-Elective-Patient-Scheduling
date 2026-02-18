@@ -207,7 +207,7 @@ def create_optimum_schedule(patients_df, sessions_timeslot_df,
     
                 return schedule_new, sessions_updated, optimisation_solutions[1],  optimisation_solutions[0], optimisation_solutions[-1], None
             else:
-                data_label.config(text="Failed Schedule generation")
+                data_obj.data_label.config(text="Failed Schedule generation")
                 return None, None, None, None, None, None
 
         elif 'simulated' in optimisation_algorithm.lower():
@@ -310,7 +310,9 @@ def multi_objectives(model, pred_model_types = [], task_repeating_count = 20, ca
         elif objective_type == 'objective2':
             result.append(objective2_overrunning_counterchances(model, pred_model_types, task_repeating_count, analytics_based = analytics_based, prep_min=prep_min, cdf_table_data = cdf_table_data))
         elif objective_type == 'objective3':
-            result.append(objective3_RTT_waiting_time_average(model))   
+            result.append(objective3_RTT_waiting_time_average(model)) 
+        elif objective_type == 'objective4':
+            result.append(objective4_surgical_prioritising_score(model)) 
     if weightage is None:
         return tuple(result)
     elif len(objectives_list) > len(weightage):
@@ -399,7 +401,14 @@ def objective3_RTT_waiting_time_average(model, individual = None):
     return np.sum([model.CASES_RTT_WAIT_WEEKS[case] for case in model.CASES if any(model.TASKS_ASSIGNED[(case, session)] == 1 for session in model.SESSIONS)])/model.SUM_CASES_RTT_WAIT_WEEKS
 
 
-    
+
+def objective4_surgical_prioritising_score(model, individual = None):
+    if individual is not None:
+        for task, value in zip(model.TASKS, individual):
+            model.TASKS_ASSIGNED[task] = value
+            #model.CASE_START_TIME[task] = value[1]
+    return np.sum([model.CASES_SURGERY_PRIORITISATION_REWARD[case] for case in model.CASES if any(model.TASKS_ASSIGNED[(case, session)] == 1 for session in model.SESSIONS)])/model.SUM_CASES_SURGERY_PRIORITISATION_REWARD
+
 
 
 def objective1_cases_length_variable(solution, cases, session_times, case_to_session_times, max_sess_util):
@@ -461,6 +470,24 @@ def satisfies_soft_constraints(model, solution_2d_arr, sessions_index_for_checki
             if not consultant in model.consultant_procedures_template_dict or not procedure in model.consultant_procedures_template_dict[consultant]:
                 return False 
                 
+    return True
+
+
+def satisfies_patient_consultant_restriction(model, solution_2d_arr, sessions_index_for_checking, proce_col):
+    for i in sessions_index_for_checking:
+        consultant_ref = model.sessions_df.iloc[i]['Consultant Code']
+        for j,(procedure, cons_check) in enumerate(zip(model.patients_df[proce_col], model.patients_df['Consultant Code'])):
+            if solution_2d_arr[i,j] == 0:
+                continue
+                
+            elif pd.isna(cons_check):
+                if cons_check in model.consultant_procedures_template_dict and procedure in model.consultant_procedures_template_dict[cons_check]:
+                    continue
+                else:
+                    return False
+            
+            elif consultant_ref != cons_check:
+                return False 
     return True
 
 
@@ -823,6 +850,7 @@ def simulated_annealing_with_paretos(solution_init,
     #return 1/data_obj.SESSION_DURATION[session] * sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[], session] ])
     if consider_session_filled_ratio:
         each_session_obj1 = [1/data_obj.SESSION_DURATION[session] * sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]* solution_init[sess_ind, case_ind] for case_ind in range(len(data_obj.CASES)) ]) for sess_ind, session in enumerate(data_obj.SESSIONS)]
+        each_session_obj1 = [max(0.05, val) for val in each_session_obj1]
     else:
         each_session_obj1 = None
     
@@ -875,13 +903,19 @@ def simulated_annealing_with_paretos(solution_init,
                    sessions_fill_ratio = each_session_obj1
                       )
         #new_solution, changed_sessions_indices = neighbor_solution(solution, new_unassigned_cases_indices, n_sessions, n_cases, cases_indices_to_skip = case_index_not_considered, sessions_fill_ratio = None)
-        if consider_consult_procedure_combination:
+        
+
+        if consider_consult_patient_combination:
+            soft_constraints_pass = satisfies_patient_consultant_restriction(data_obj, new_solution, changed_sessions_indices, proce_related_col)
+
+        elif consider_consult_procedure_combination:
             soft_constraints_pass = satisfies_soft_constraints(
                 data_obj,
                 new_solution,
-                sessions_index_for_checking,
-                procedure_related_col
+                changed_sessions_indices,
+                proce_related_col
             )
+            
         # Check if the solution is feasible
         if soft_constraints_pass and satisfies_constraints(data_obj, 
                                            individual = new_solution.T.flatten(),
@@ -926,7 +960,7 @@ def simulated_annealing_with_paretos(solution_init,
             if consider_session_filled_ratio:
                 for sess_ind in changed_sessions_indices:
                     session = data_obj.SESSIONS[sess_ind]
-                    each_session_obj1[sess_ind] = min(0.9, sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]* solution[sess_ind, case_ind] for case_ind in range(len(data_obj.CASES)) ]))
+                    each_session_obj1[sess_ind] = max(0.05, sum([data_obj.TASKS_DURATION.loc[data_obj.CASES[case_ind], session]* solution[sess_ind, case_ind] for case_ind in range(len(data_obj.CASES)) ]))
 
             pareto_archive, pareto_changed = update_pareto_archive(pareto_archive, {'x': solution, 'f':current_kpis})
 
@@ -947,7 +981,7 @@ def simulated_annealing_with_paretos(solution_init,
 def solve_optimisation_problem_with_MIP_solver(data_obj,
                     possible_task_durations_df = None, 
                     objectives = (), 
-                    obj_weightage = {'objective1':0.75, 'objective2':0.2, 'objective3':0.25}, 
+                    obj_weightage = {'objective1':1, 'objective2':0.5, 'objective3':1, 'objective4':1}, 
                     hyper_param = {},
                     consider_consult_procedure_combination = False,
                     consider_consult_patient_combination = False
@@ -983,8 +1017,30 @@ def solve_optimisation_problem_with_MIP_solver(data_obj,
                     if not j in case_index_not_considered:
                         case_index_not_considered.append(j)
                 #durations[i, j] = math.ceil(durations[i, j] / 5) * 5
+    cases_with_no_consultant_provided = []
+    
+    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
+        
+        consultant_patient_possibility = np.zeros((s, n), dtype=int)
+        
+        for j, case in enumerate(data_obj.CASES):
+            #related_procedure = data_obj.patients_df.loc[case, proce_related_col]
+            consultant_required = data_obj.patients_df.loc[case, 'Consultant Code']
+            if pd.isna(consultant_required):
+                if not j in case_index_not_considered:
+                    cases_with_no_consultant_provided.append(j)
+                continue
+            
+            for i, session_consultant in enumerate(data_obj.sessions_df['Consultant Code']):
+                if consultant_required == session_consultant:
+                    consultant_patient_possibility[i, j] = 1
 
-    if consider_consult_procedure_combination:
+        cases_with_no_consultant_provided = [a-len([_ for _ in case_index_not_considered if a>_]) for a in cases_with_no_consultant_provided]
+        
+        consultant_patient_possibility = np.delete(consultant_patient_possibility, case_index_not_considered, axis=1)
+
+    
+    if consider_consult_procedure_combination or len(cases_with_no_consultant_provided) > 0:
         proce_related_col = [col for col in data_obj.patients_df.columns if 'procedure' in col.lower()][0]
         consultant_procedure_possibility = np.zeros((s, n), dtype=int)
         for i, session_consultant in enumerate(data_obj.sessions_df['Consultant Code']):
@@ -998,16 +1054,7 @@ def solve_optimisation_problem_with_MIP_solver(data_obj,
 
         consultant_procedure_possibility = np.delete(consultant_procedure_possibility, case_index_not_considered, axis=1)
 
-    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
-        consultant_patient_possibility = np.zeros((s, n), dtype=int)
-        for i, session_consultant in enumerate(data_obj.sessions_df['Consultant Code']):
-            for j, case in enumerate(data_obj.CASES):
-                #related_procedure = data_obj.patients_df.loc[case, proce_related_col]
-                consultant_required = data_obj.patients_df.loc[case, 'Consultant Code']
-                if pd.notna(consultant_required) and consultant_required == session_consultant:
-                    consultant_patient_possibility[i, j] = 1
-
-        consultant_patient_possibility = np.delete(consultant_patient_possibility, case_index_not_considered, axis=1)
+    
         
             
     durations = np.delete(durations, case_index_not_considered, axis=1)
@@ -1088,10 +1135,11 @@ def solve_optimisation_problem_with_MIP_solver(data_obj,
     
     if 'objective3' in objectives:
         waiting_weeks = [value for key, value in data_obj.CASES_RTT_WAIT_WEEKS.items()]
-        sum_waiting_weeks = sum(waiting_weeks)
+        
         # Remove elements by index
         for index in case_index_not_considered:
             del waiting_weeks[index]
+        sum_waiting_weeks = sum(waiting_weeks)
         #Waiting weeks related objectives
         waiting_weeks_objective = quicksum(waiting_weeks[j] * x[i, j] for j in range(n) for i in range(s)) / sum_waiting_weeks
 
@@ -1099,26 +1147,41 @@ def solve_optimisation_problem_with_MIP_solver(data_obj,
         # Combine the objectives with the given weights using quicksum
         #combined_objective = weight_resources * resource_utilisation_objective + weight_probability * not_overrunning_objective
         # + obj_weightage['objective3']* waiting_weeks_objective
+
+    if 'objective4' in objectives:
+        priority_reward = [value for key, value in data_obj.CASES_SURGERY_PRIORITISATION_REWARD.items()]
         
+        # Remove elements by index
+        for index in case_index_not_considered:
+            del priority_reward[index]
+        sum_priority_reward = sum(priority_reward)
+        priority_reward_objective = quicksum(priority_reward[j] * x[i, j] for j in range(n) for i in range(s)) / sum_priority_reward
+
+        combined_objective = obj_weightage['objective4']* priority_reward_objective if combined_objective is None else combined_objective + obj_weightage['objective4']* priority_reward_objective
 
     opti_model.setObjective(combined_objective, "maximize")
 
     
     # Constraints
-
-    #consultant procedure constraints
-    if consider_consult_procedure_combination:
+    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
+        for j in range(n):
+            # if consultant provided implement consultant constraints else go for next one
+            if not j in cases_with_no_consultant_provided:
+                for i in range(s):
+                    if consultant_patient_possibility[i,j] == 0:
+                        opti_model.addCons(x[i, j] == 0)
+            else:
+                for i in range(s):
+                    if consultant_procedure_possibility[i,j] == 0:
+                        opti_model.addCons(x[i, j] == 0)
+                                        
+        #consultant procedure constraints
+    elif consider_consult_procedure_combination:
         for j in range(n):
             for i in range(s):
                 if consultant_procedure_possibility[i,j] == 0:
                     opti_model.addCons(x[i, j] == 0)
     
-    if consider_consult_patient_combination and 'Consultant Code' in data_obj.patients_df.columns:
-        for j in range(n):
-            for i in range(s):
-                if consultant_patient_possibility[i,j] == 0:
-                    opti_model.addCons(x[i, j] == 0)
-                    
     # Each event is assigned to at most one slot
     for j in range(n):
         opti_model.addCons(

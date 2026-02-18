@@ -13,8 +13,10 @@ from optimisation_related_functions import create_optimum_schedule, convert_bina
 class Scheduling_Model:
     def __init__(self, df_cases, df_sessions):
         self.CASES = tuple(df_cases["Patient ID"])
+        self.cases_count = len(tuple(df_cases["Patient ID"]))
         self.CASES_RTT_WAIT_WEEKS = {}
         self.CASES_RTT_PRIORITY = {}
+        self.CASES_SURGERY_PRIORITY = {}
         self.SESSIONS = tuple(df_sessions["Session ID"])
         self.SESSION_DURATION = pd.Series(df_sessions["Total Slot Minutes"].values, index=df_sessions["Session ID"]).to_dict()
         self.SUM_ALL_SESSIONS_DURATION = sum(df_sessions["Total Slot Minutes"])
@@ -37,6 +39,8 @@ class Scheduling_Model:
         self.schedule_new = None
         self.sessions_updated = None
         self.consultant_procedures_template_dict = {}
+        self.SUM_CASES_SURGERY_PRIORITISATION_REWARD = 0
+        
         #self.consultant_procedure_historical_count = None
         
     def generate_session_start_times(self, df_sessions):
@@ -47,14 +51,42 @@ class Scheduling_Model:
         self.SESSION_START_TIME = dict(zip(sessions_temp["Session ID"], sessions_temp["Start"]))
         
     def add_cases_RTT_waiting_time(self, df_cases):
-        wait_weeks_col = [col for col in df_cases.columns if 'wait' in col.lower() and 'week' in col.lower()][0]
-        #if wait_weeks_col in df_cases.columns:
+        wait_weeks_cols = [col for col in df_cases.columns if 'wait' in col.lower() and 'week' in col.lower()]
+        
+        if len(wait_weeks_cols) > 0:
         #self.CASES_RTT_WAIT_WEEKS = pd.Series(df_cases[wait_weeks_col].values, index=df_cases["Patient ID"]).to_dict()
-        self.CASES_RTT_WAIT_WEEKS = df_cases.dropna(subset=["Patient ID"]).set_index("Patient ID")[wait_weeks_col].fillna(0).to_dict()
+            self.CASES_RTT_WAIT_WEEKS = df_cases.dropna(subset=["Patient ID"]).set_index("Patient ID")[wait_weeks_cols[0]].fillna(0).to_dict()
+            
+        elif 'RTT clock start' in df_cases.columns:
+            # Compute wait weeks from RTT clock start to today
+            today = pd.to_datetime(datetime.datetime.today().date())
+            df_cases["RTT clock start"] = pd.to_datetime(df_cases["RTT clock start"], errors='coerce')
+            
+            df_cases["Computed Wait Weeks"] = (
+                ((today - df_cases["RTT clock start"]).dt.days / 7)
+                .clip(lower=0)  # Make negative durations zero
+                .fillna(0)
+            )
+            
+            self.CASES_RTT_WAIT_WEEKS = (
+                df_cases.dropna(subset=["Patient ID"])
+                .set_index("Patient ID")["Computed Wait Weeks"]
+                .to_dict()
+            )
+        else:
+            self.CASES_RTT_WAIT_WEEKS = {}
+            
+        self.SUM_CASES_RTT_WAIT_WEEKS = sum(value for key, value in self.CASES_RTT_WAIT_WEEKS.items())
     
     def add_cases_RTT_Priority(self, df_cases):
         if 'RTT WL Priority' in df_cases.columns:
-            self.CASES_PRIORITY = pd.Series(df_cases["RTT WL Priority"].values, index=df_cases["Patient ID"]).to_dict()
+            self.CASES_RTT_PRIORITY = pd.Series(df_cases["RTT WL Priority"].values, index=df_cases["Patient ID"]).to_dict()
+
+    def add_cases_surgery_Priority(self, df_cases):
+        if 'Procedure Priority' in df_cases.columns:
+            self.CASES_SURGERY_PRIORITY = pd.Series(df_cases["Procedure Priority"].values, index=df_cases["Patient ID"]).to_dict()
+            self.CASES_SURGERY_PRIORITISATION_REWARD = {key: 0 if pd.isna(value) else 1.25 - int(value[-1])*0.25 for key, value in self.CASES_SURGERY_PRIORITY.items()}
+            self.SUM_CASES_SURGERY_PRIORITISATION_REWARD = sum(self.CASES_SURGERY_PRIORITISATION_REWARD.values())
     
     def get_ordinal_session_dates(self, df_sessions):
         sessions_temp = df_sessions.copy()
@@ -198,7 +230,7 @@ class Scheduling_Model:
                           best_solution_weightage = None,
                           hyper_param = {}, 
                           solutions_only =False, 
-                          sessions_selection_prioritise = True,
+                          sessions_selection_prioritise = False,
                           consult_procedure_restriction = False,
                           consult_patient_restriction = False
                                          ):
