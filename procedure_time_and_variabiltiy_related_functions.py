@@ -13,9 +13,11 @@ import pickle
 import os
 import re
 #import torch
+import subprocess
+
 from data_processing_nd_encoding_related_functions import age_to_group, filter_dataset_till_possible
 
-#from predictive_model_related_functions import gaussan_based_prediction, predict_with_model
+from predictive_model_related_functions import gaussan_based_prediction, predict_with_model
 
 from data_processing_nd_encoding_related_functions import one_hot_encode_dataframe, one_hot_encoding_for_similar_columns
 
@@ -327,7 +329,7 @@ def compute_TASKS_average_surgical_time(patient_with_data, df_sessions, model_ty
     input_data_df = pd.DataFrame(columns = model_input_features)
     input_data_index_list = []
 
-    procedure_code_related_col = [col for col in patient_with_data.columns if 'procedure code' in col.lower()][0]
+    procedure_code_related_col = [col for col in patient_with_data.columns if all(st in col.lower() for st in ['procedure', 'code'])][0]
     
     for pat_index, patient_row in patient_with_data.iterrows():
         # Check if the session has available slots
@@ -406,6 +408,105 @@ def compute_TASKS_average_surgical_time(patient_with_data, df_sessions, model_ty
     return result.loc[patient_with_data['Patient ID']]
     #'''
     #return input_data_df
+
+
+
+
+def compute_surgical_time_fixed_case_sessions(patient_with_data_inc_sessions, model_types, 
+                                  model_categ_dic, pred_model_related_preprocessed_data, 
+                                  new_or_ignored_data_4_model, model_input_features, 
+                                  varying_features, force_encoding_cols, trained_model_dir):
+    #patient_with_data_inc_sessions = update_patient_data(df_cases, patient_data)
+
+    data_relevant_to_trained_models = {col: list(pred_model_related_preprocessed_data[col].unique()) for col in model_input_features}
+    #model_trained_consultants = list(pred_model_related_preprocessed_data['Consultant Code'].unique())
+
+    result = pd.Series()
+    
+    input_data_df = pd.DataFrame(columns = model_input_features)
+    input_data_index_list = []
+
+    procedure_code_related_col = [col for col in patient_with_data_inc_sessions.columns if all(st in col.lower() for st in ['procedure', 'code'])][0]
+    #print(procedure_code_related_col)
+    for pat_index, patient_row in patient_with_data_inc_sessions.iterrows():
+        # Check if the session has available slots
+        #for pat_index, patient_row in patients_not_scheduled.iterrows():
+        sub_data_for_predictive_model = pd.DataFrame(patient_row).transpose().reset_index(drop=True)
+        
+        sub_data_for_predictive_model['Actual Procedure 1 Code 1'] = sub_data_for_predictive_model[procedure_code_related_col]
+        #print(patient_row[procedure_code_related_col])
+        if not patient_row[procedure_code_related_col] in data_relevant_to_trained_models['Actual Procedure 1 Code 1']:
+            print(f"{patient_row[procedure_code_related_col]} not in training dataset")
+            if patient_row[procedure_code_related_col] in new_or_ignored_data_4_model['Actual Procedure 1 Code 1'].tolist():
+                result.loc[(patient_row['Patient ID'],)] = np.ceil(np.mean(new_or_ignored_data_4_model[new_or_ignored_data_4_model['Actual Procedure 1 Code 1'] == patient_row[procedure_code_related_col]]['H4 Minutes'])/5)*5
+                #print(np.mean(new_or_ignored_data_4_model[new_or_ignored_data_4_model['Actual Procedure 1 Code 1'] == patient_row['Procedure Code']]['H4 Minutes']))
+            elif 'Primary Procedure Code' in pred_model_related_preprocessed_data.columns and patient_row[procedure_code_related_col] in pred_model_related_preprocessed_data['Primary Procedure Code'].tolist():
+                result.loc[(patient_row['Patient ID'],)] = np.ceil(np.mean(pred_model_related_preprocessed_data[pred_model_related_preprocessed_data['Primary Procedure Code'] == patient_row[procedure_code_related_col]]['H4 Minutes'])/5)*5
+
+            elif 'Primary Procedure Code' in new_or_ignored_data_4_model.columns and patient_row[procedure_code_related_col] in new_or_ignored_data_4_model['Primary Procedure Code'].tolist():
+                result.loc[(patient_row['Patient ID'],)] = np.ceil(np.mean(new_or_ignored_data_4_model[new_or_ignored_data_4_model['Primary Procedure Code'] == patient_row[procedure_code_related_col]]['H4 Minutes'])/5)*5
+            
+            elif 'Allocated Time' in patient_row.index and pd.notna(patient_row['Allocated Time']):
+                result.loc[(patient_row['Patient ID'],)] = patient_row['Allocated Time']
+            else:
+                result.loc[(patient_row['Patient ID'],)] = np.nan
+            
+            continue
+        
+        #for session_index, session_row in df_sessions.iterrows():          
+        #for col in varying_features:
+        #    if col in df_sessions.columns:
+        #        sub_data_for_predictive_model.loc[0,col] = session_row[col]
+
+        #get all the feature name for which new data has appeared against the model training data
+        new_feature_data = []
+        for feature in model_input_features[1:]:
+            if not sub_data_for_predictive_model.loc[0,feature] in data_relevant_to_trained_models[feature]:
+                new_feature_data.append(feature)
+
+        if len(new_feature_data) > 0:
+            alternative_features_data = {}
+            for feature in new_feature_data:
+                alternative_features_data[feature] = select_3_representative_data(pred_model_related_preprocessed_data, {'Actual Procedure 1 Code 1': patient_row[procedure_code_related_col]}, feature)
+            for i in range(3):
+                for feature in new_feature_data:
+                    sub_data_for_predictive_model.loc[0,feature] = alternative_features_data[feature][i]
+                input_data_df = pd.concat([input_data_df, sub_data_for_predictive_model[model_input_features]])
+                input_data_index_list.append((patient_row['Patient ID'], i+1))
+
+        else:
+            input_data_df = pd.concat([input_data_df, sub_data_for_predictive_model[model_input_features]])
+            input_data_index_list.append((patient_row['Patient ID']))
+                
+    input_data_df.index = input_data_index_list
+
+    #return input_data_df
+    
+    predictions_arr = np.zeros((len(input_data_df), len(model_types)))
+    
+    for model_index, model_type in enumerate(model_types):
+        if 'Last10Mean' in model_type:
+            memo = {}
+            pred_temp = input_data_df.apply(lambda row: last10mean_with_memo(pred_model_related_preprocessed_data, memo, 'Actual Procedure 1 Code 1', 'Consultant Code', row['Actual Procedure 1 Code 1'], row['Consultant Code'], 'H4 Minutes'), axis=1)
+        else:
+            pred_temp = predict_the_time(model_type, input_data_df, model_input_features,  model_categ_dic, force_encoding_cols, 'H4 Minutes', trained_model_dir = trained_model_dir)
+        #print(pred_temp)
+        if model_type == 'BayesianRidge':
+            pred_temp = pred_temp[0]
+        predictions_arr[:,model_index] = np.maximum(15, pred_temp)
+
+    series_temp = pd.Series(np.mean(predictions_arr, axis =1), index = [i if isinstance(i, tuple) else (i,) for i in input_data_index_list])
+
+    result= pd.concat([result, np.ceil(series_temp.groupby(lambda idx: idx[0]).mean()/5)*5])
+    #result = create_df_from_multiindex_series(series_temp)
+    #return create_df_from_multiindex_series(series_temp)
+    #return series_temp
+
+    #result = result.rename(columns = {col:'Session '+str(col)  for col in result.columns })
+    
+    return result.loc[patient_with_data_inc_sessions['Patient ID']]
+
+
 
 
 # Function to calculate percentage over +30 and under -30
@@ -987,12 +1088,11 @@ def last10mean_with_memo(df, memo, colA, colB, category_a, category_b, value_col
 def load_timeslot_file(timeslot_file_path):
     # Add columns and values for predictive model required features  
     sessions_timeslot_df = pd.read_excel(timeslot_file_path)
-    '''
     sessions_timeslot_df['Day of the week'] = sessions_timeslot_df['Session Planned Start Date/Time'].apply(lambda x: x.day_name())
     sessions_timeslot_df['Covid Flag'] = 'post-covid'
-    if 'Theatre Suite Name' not in sessions_timeslot_df.columns and 'Theatre Name' in sessions_timeslot_df.columns:
+    if 'Theatre Suite Name' not in sessions_timeslot_df.columns:
         sessions_timeslot_df['Theatre Suite Name'] = sessions_timeslot_df['Theatre Name'].apply(lambda x: 'Elmstead Theatres' if x in ['Theatre 05', 'Theatre 5'] else 'Constable Theatres')
-    '''
+    
     sessions_timeslot_df['Total Slot Minutes'] = (sessions_timeslot_df['Session Planned End Date/Time'] - sessions_timeslot_df['Session Planned Start Date/Time']).dt.total_seconds() // 60
     sessions_timeslot_df['Remaining Slot Minutes'] = (sessions_timeslot_df['Session Planned End Date/Time'] - sessions_timeslot_df['Session Planned Start Date/Time']).dt.total_seconds() // 60
     sessions_timeslot_df['H4 Minutes Booked'] = 0
@@ -1322,7 +1422,7 @@ def plot_theatre_occupancy_data(patient_flow_df, figure_size, label_mapping, col
             #ax2.set_ylabel('Date', labelpad=15)
 
         else:
-            ax2.set_yticklabels(df[addi_label])
+            ax2.set_yticklabels(df.groupby(grouping_col)[addi_label].first())
             ax2.set_ylabel(addi_label, labelpad=15)
     
     # Set title
@@ -1500,41 +1600,6 @@ def predict_the_time(model_type, dataset, feature_variables_names, model_sub_lev
 
 
 
-def predict_with_model(model_type, trained_model, X_input_df, log_transformer = None):
-    # Predict:
-    
-    if model_type == 'NeuralNet':
-        X_tensor = torch.tensor(X_input_df.to_numpy(), dtype=torch.float32)
-        trained_model.eval()
-        with torch.no_grad():
-            #categorical_data = X_tensor[:, :trained_model.num_categorical_features]
-            #numerical_data = X_tensor[:, trained_model.num_categorical_features:]
-            outputs = trained_model(X_tensor)
-            y_pred = outputs.squeeze().numpy()
-    elif 'Stochastic' in model_type:
-        must_match_columns_prioritywise = trained_model[0][0]
-        #print(must_match_columns_prioritywise)
-        training_dataset = trained_model[1]
-        #must_match_columns = ['Actual Procedure 1 Code 1', 'Consultant Code']
-        y_pred = data_filter_based_prediction(model_type, training_dataset, X_input_df, must_match_columns_prioritywise, trained_model[0][1])
-    
-    elif 'BayesianRidge' in model_type:
-        y_pred, y_std = trained_model.best_estimator_.predict(X_input_df, return_std=True)
-        if not log_transformer is None:
-            y_pred = log_transformer.inverse_transform(y_pred)
-            y_std = log_transformer.inverse_transform(y_std)
-        return y_pred, y_std
-    # for 'RegressionPipeline' ,'DecisionTreeRegressor' , SupportVectorRegression , gradient_boosting
-    else: 
-        y_pred = trained_model.best_estimator_.predict(X_input_df)
-        
-    if not log_transformer is None:
-        y_pred = log_transformer.inverse_transform(y_pred)
-    
-    return y_pred
-
-
-
 def shift_feature_to_data_category(modelling_parameters, feature_name, feature_value):
         
         updated_para = copy.deepcopy(modelling_parameters)
@@ -1646,8 +1711,10 @@ def select_feature_values_from_dataset(df, features, feature, value):
 
 def update_patient_data(patients_df, patients_data_df, fixed_data_for_patient = []):
     
-    if 'Age group at admit' not in patients_data_df and 'Age group at admit' not in patients_df.columns.tolist():
-        patients_df['Age group at admit'] = patients_data_df['Age'].apply(lambda x: age_to_group(x))
+    if 'Age group at admit' not in patients_df.columns.tolist():
+        if 'Age group at admit' not in patients_data_df.columns.tolist():
+            age_related_column = [col for col in patients_data_df.columns if 'age' in col.lower()][0]
+            patients_df['Age group at admit'] = patients_data_df[age_related_column].apply(lambda x: age_to_group(x))
     
     data_prev_cols = [col for col in patients_df.columns if col not in fixed_data_for_patient]
     
@@ -1669,4 +1736,4 @@ def update_patient_data(patients_df, patients_data_df, fixed_data_for_patient = 
 
     #updated_patients_df = []
     
-    return updated_patients_df[list(dict.fromkeys(list(patients_df.columns)+fixed_data_for_patient))]
+    return updated_patients_df[list(dict.fromkeys(list(patients_df.columns)+fixed_data_for_patient))].set_index('Patient ID', drop=False)
