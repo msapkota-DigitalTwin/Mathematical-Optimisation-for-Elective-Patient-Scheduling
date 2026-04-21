@@ -1,0 +1,184 @@
+/* =============================================================================
+   Purpose     : Patient-level extract for planned but unscheduled orthopaedic surgery
+                 including demographics, intended procedure (OPCS + EPIC),
+                 consultant details, admission classification, planned duration,
+                 and RTT clock-start / waiting weeks.
+   Author      : Madhu Sudan Sapkota
+
+   Created     : 2026-02-03
+   Notes       :  Procedure Priority uses first 2 chars of ClinicalPriority (blank if *Un%).
+   ============================================================================= */ 
+
+
+DECLARE @PastStart date = '20251001';
+DECLARE @PastEnd   date = DATEADD(day, -7, CAST(GETDATE() AS date));  -- 1 week before today
+
+;WITH PastOPCSMap AS
+(
+    SELECT
+        opcase.PrimaryProcedureKey AS ProcedureKey,
+        MAX(OPCSCodes.PrimaryOPCS) AS PrimaryOPCS
+    FROM dbo.SurgicalCaseFact opcase WITH (NOLOCK)
+
+    LEFT JOIN (
+        SELECT scf.SurgicalCaseKey,
+               MAX(CASE WHEN cpf.PrincipalCodedProcedure = '1'
+                         AND cpf.CodedProcedureSequence_X = '1'
+						 and  ptd.Code not like 'X%'
+                        THEN ptd.Code END) AS PrimaryOPCS
+        FROM SurgicalCaseFact scf
+        LEFT JOIN BillingAccountFact baf
+            ON scf.HospitalEncounterKey = baf.PrimaryEncounterKey
+        LEFT JOIN CodedProcedureFact cpf
+            ON baf.BillingAccountKey = cpf.BillingAccountKey
+        LEFT JOIN ProcedureTerminologyDim ptd
+            ON cpf.ProcedureTerminologyKey = ptd.ProcedureTerminologyKey
+           --AND ptd.CodeSet = N'OPCS-4'
+        GROUP BY scf.SurgicalCaseKey
+    ) OPCSCodes
+        ON opcase.SurgicalCaseKey = OPCSCodes.SurgicalCaseKey
+
+    INNER JOIN dbo.DateDim d WITH (NOLOCK)
+        ON opcase.SurgeryDateKey = d.DateKey
+
+	inner join dbo.DepartmentDim			oproom	with (nolock) on opcase.OperatingRoomKey				= oproom.DepartmentKey
+
+    WHERE opcase._IsDeleted = 0
+      AND opcase.Canceled   = 0
+      --AND opcase.SchedulingStatus_X LIKE ''     -- past
+	  and (opcase.Canceled = 0 and opcase.ProcedureNotPerformed = 0)
+      AND opcase.SurgeryDateKey <> -1           -- past (per your rule)
+      AND OPCSCodes.PrimaryOPCS IS NOT NULL
+      AND d.DateValue BETWEEN @PastStart AND @PastEnd
+	  and oproom.DepartmentName like '%ESEOC%'
+    GROUP BY opcase.PrimaryProcedureKey
+)
+
+,
+RTT AS
+(
+    SELECT
+        x.PatientMrn ,
+        x.PathwayPeriodStartDate AS RTT_ClockStart,
+        ROUND(x.DaysWaiting / 7.0, 0) AS WaitingWeeks,
+        x.NHSeRttPathwayKey,
+        x._SnapshotInstant
+    FROM
+    (
+        SELECT
+            rtt.*,
+            ROW_NUMBER() OVER
+            (
+                PARTITION BY  rtt.PatientMrn
+				--PARTITION BY rtt.NHSeRttPathwayKey, rtt.PatientMrn
+                ORDER BY rtt._SnapshotInstant DESC
+            ) AS rn
+        FROM NHSERTTPathwaySnapshotDataMart rtt WITH (NOLOCK)
+        WHERE
+            rtt.IsCompleted = 0
+			and rtt.PathwayPeriodCurrentStatus = 'Active'
+            AND rtt.SubmissionFrequency = 'Daily'
+            AND (UPPER(rtt.TreatmentFunctionCode) LIKE '%TRAUMA%'
+              OR UPPER(rtt.TreatmentFunctionCode) LIKE '%ORTHO%')
+            --AND rtt.ManagingLocationOdsCode IN ('RDEE4', 'Y8K2U')
+            AND DATEADD(week, 52, rtt.LastValidationDate) >= CAST(GETDATE() AS date)
+			--and rtt.PatientMrn not like NULL
+    ) AS x
+    WHERE x.rn = 1
+)
+
+
+-- Future query (same as before) - just joins PastOPCSMap by ProcedureKey
+SELECT
+    Pat.PrimaryMrn                         AS  'Patient ID',
+	--opcase.PatientDurableKey,
+	--RTT.PatientMrn,
+	
+    --/*
+	Pat.Sex as 'Gender',
+	--Pat.AgeInYears,
+	CASE
+			WHEN Pat.AgeInYears <= 5 THEN '0to5'
+			WHEN Pat.AgeInYears <= 15 THEN '6to15'
+			WHEN Pat.AgeInYears <= 30 THEN '16to30'
+			WHEN Pat.AgeInYears <= 50 THEN '31to50'
+			WHEN Pat.AgeInYears <= 60 THEN '51to60'
+			WHEN Pat.AgeInYears <= 70 THEN '61to70'
+			WHEN Pat.AgeInYears <= 80 THEN '71to80'
+			ELSE 'Above80'
+		END AS [Age group at admit],
+	--opcase.PreprocedureDiagnosisComboKey  ,
+
+    --schedDate.DateValue                    AS [Planned Date],
+    --opcase.ScheduledCaseInstant_X          AS [Planned Date/Time],
+	--*/
+    
+    REPLACE(PastOPCSMap.PrimaryOPCS, '.', '') AS 'Intended Procedure Code',
+
+	ProcP.Name							as 'Intended Procedure Description',
+	ProcP.ProcedureKey as 'EPIC Procedure Key',
+	pc.N_procedures,
+	EncSpec.Name as 'Specialty',
+	SurgP.ProviderNationalCode							as 'Consultant Code',
+	SurgP.Name							as 'Consultant Name',
+	
+	--[SurgeryPatientClass]    as 'Patient Class',
+	case when opcase.[SurgeryPatientClass] like 'Day%' then 'Day case admission' else 'Ordinary admission' end as 'Patient Classification',
+	--opcase.ClinicalPriority,
+	case when opcase.ClinicalPriority like '*Un%' then '' else LEFT(opcase.ClinicalPriority, 2) end AS'Procedure Priority',
+
+	opcase.ScheduledCaseLengthInMinutes    AS [Planned Duration (min)],
+	-- RTT fields from join (only these 2)
+    RTT.RTT_ClockStart,
+    cast(RTT.WaitingWeeks as int) as 'RTT_WaitingWeeks'
+FROM dbo.SurgicalCaseFact opcase WITH (NOLOCK)
+
+Inner Join (
+    SELECT
+        opevent.SurgicalCaseKey,
+        --opevent.SurgeryDateKey,
+        COUNT(*) as N_procedures   -- total procedure-event rows per case+date
+    FROM dbo.SurgicalProcedureEventFact opevent WITH (NOLOCK)
+	--where opevent.Performed = 1
+    GROUP BY
+        opevent.SurgicalCaseKey
+        --opevent.SurgeryDateKey
+	) pc
+
+    ON  pc.SurgicalCaseKey = opcase.SurgicalCaseKey
+
+Inner Join dbo.EncounterFact enc with (nolock) on opcase.HospitalEncounterKey = enc.EncounterKey
+
+inner join dbo.CategoryDim				EncSpec	with (nolock) on Enc.EncounterSpecialtyCategoryKey_X	= EncSpec.CategoryKey
+
+
+INNER JOIN dbo.PatientDim Pat WITH (NOLOCK)
+    ON opcase.PatientDurableKey = Pat.DurableKey
+   AND Pat.IsCurrent = 1
+INNER JOIN dbo.ProcedureDim ProcP WITH (NOLOCK)
+    ON ProcP.ProcedureKey = opcase.PrimaryProcedureKey
+
+inner join dbo.DepartmentDim			oproom	with (nolock) on opcase.OperatingRoomKey		= oproom.DepartmentKey
+
+inner join dbo.ProviderDim				SurgP	with (nolock) on opcase.PrimarySurgeonKey				= SurgP.ProviderKey
+
+INNER JOIN dbo.DateDim schedDate WITH (NOLOCK)
+    ON opcase.SurgeryDateKey = schedDate.DateKey
+
+--inner join dbo.DurationDim				Age		with (nolock) on Pat.AgeInYears	= Pat.AgeInYears
+
+LEFT JOIN PastOPCSMap
+    ON PastOPCSMap.ProcedureKey = opcase.PrimaryProcedureKey and opcase.PrimaryProcedureKey <> '-1'
+
+LEFT JOIN RTT
+    ON RTT.PatientMrn = Pat.PrimaryMrn    -- join RTT to future by MRN
+
+
+WHERE opcase._IsDeleted = 0
+  AND opcase.Canceled   = 0
+  AND opcase.SchedulingStatus_X LIKE 'Not Scheduled'  -- future
+  --AND opcase.SurgeryDateKey = -1                -- future
+ -- and oproom.DepartmentName like 'ESEOC THEATRE'
+ --and (EncSpec.Name like '%Ortho%' or oproom.DepartmentName like '%ESEOC%')
+ and oproom.DepartmentName like '%ESEOC%'
+ --and opcase.HasDiabetes = 0

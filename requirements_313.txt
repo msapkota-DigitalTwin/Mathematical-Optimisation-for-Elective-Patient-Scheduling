@@ -1,0 +1,9 @@
+numpy
+pandas
+pyscipopt
+scikit-learn
+simpy
+matplotlib
+colorlover
+seaborn
+openpyxl

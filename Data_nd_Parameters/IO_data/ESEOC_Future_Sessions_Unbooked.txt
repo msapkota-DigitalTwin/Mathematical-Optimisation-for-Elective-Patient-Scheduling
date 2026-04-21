@@ -1,0 +1,101 @@
+Use Caboodle
+
+IF OBJECT_ID('tempdb..#SessionsFuture') IS NOT NULL
+    DROP TABLE #SessionsFuture;
+
+
+select
+case when theat.LocationName = 'ESNEFT ESEOC' then 'ESEOC'
+	when theat.LocationName =  'IPS South Theatres Surgical Hub' then 'GSH' -- 'IPS Green Surgical Hub' then 'GSH'
+	when theat.LocationName = 'ESNEFT IPSWICH HOSPITAL' then 'Ips'
+	when theat.LocationName = 'ESNEFT COLCHESTER HOSPITAL' then 'Col'
+	else theat.LocationName end as 'Hosp'
+
+,s.TheatreSessionId as 'Session ID'
+,s.SessionScheduledStartInstant as 'Session Planned Start Date/Time'
+,s.SessionScheduledEndInstant as 'Session Planned End Date/Time' 
+,theat.DepartmentName as 'Theatre Suite Name'
+,theat.Name as 'Theatre Name'
+--,s.SessionOwnerSpecialtyOwnedList
+,Cons.ProviderNationalCode  as 'Consultant Code'
+,Cons.Name as 'Consultant'
+,case when SessionOwnerSpecialtyOwnedList in ('Emergency','Trauma Surgery') then 'Non-Elective' 
+	when s.SessionLength >= 1439 then 'Non-Elective' 
+	else 'Elective' end as 'Session Type' 
+
+--,s.SessionScheduledStartInstant 
+--,s.SessionStartTime as 'Session Planned Start Time'
+,Cons.PrimarySpecialty as 'Consutlant Specialty'
+,case when sum(datediff(minute,c.ScheduledInTheatreInstant,c.ScheduledOutofTheatreInstant)) is NULL then 0 
+	else sum(datediff(minute,c.ScheduledInTheatreInstant,c.ScheduledOutofTheatreInstant)) end    as 'H4 Minutes Booked' 
+--,sum(surg.ScheduledOutOfRoomTimeOfDayKey - surg.ScheduledInRoomTimeOfDayKey) as 'H4 Minutes Booked2' 
+
+--,cast(sum(c.count) / (cast(s.SessionLength AS DECIMAL(10,2)) / 555) AS DECIMAL(10,2)) AS Cases_Per_9Hr15Min_List				-- NEW SYNTAX
+--,SUM(case when (Surg.Classification like 'Elective%' or Surg.Classification IN ('Planned',' Booked')) THEN c.count ELSE 0 END) AS 'Num Elective Ops on List'
+--,SUM(case when Surg.Classification like 'Emergency%' THEN c.count ELSE 0 END) AS 'Num Non-Elective Ops on List'
+
+,s.SessionCreatedInstant
+
+--into #SessionsFuture
+
+from TheatreSessionFactx s with (nolock)
+left join TheatreCaseFactx c with (nolock) on s.TheatreSessionKey = c.TheatreSessionKey and c.CancellationInstant is NULL and c._IsDeleted = 0 --and c.PatientOutOfTheatreInstant is NOT NULL --c.CaseCancelled = 0 and c.ProcedureNotPerformed is NULL and 
+inner join ResourceDim r on s.TheatreRoomKey = r.ResourceKey -- and r._IsDeleted = 0
+left join SurgicalCaseFact surg with (nolock) on c.SurgicalCaseKey = surg.SurgicalCaseKey and surg._isDeleted = 0 and surg.Canceled = 0 --and surg.SchedulingStatus_X like 'Scheduled'
+inner join DepartmentDim theat with (nolock) on s.TheatreRoomDepartmentKey = theat.DepartmentKey and theat._IsDeleted = 0
+inner join ProviderDim Cons with (nolock) on s.SessionOwnerSurgeonListDurableKey = Cons.DurableKey and Cons._Isdeleted = 0 and Cons.Iscurrent = 1
+inner join DepartmentDim dep with (nolock) on s.TheatreSessionDepartmentKey = dep.DepartmentKey and dep._IsDeleted = 0
+where s._IsDeleted = 0
+--and s.TheatreSessionKey > 0
+and s.SessionCancellationInstant is NULL
+and cast(s.SessionScheduledStartInstant as datetime)>= GETDATE()
+and theat.LocationName like '%ESEOC%'
+--and (Cons.PrimarySpecialty like 'Ear%' or Cons.PrimarySpecialty like 'ENT')
+--and s.SessionSpecialtyEpicId = '85' -- for ENT 85
+and s.SessionSpecialtyEpicId = '250' --for Orthopaedics
+and SessionOwnerSpecialtyOwnedList not in ('Emergency') and s.SessionLength < 1439
+group by 
+case when theat.LocationName = 'ESNEFT ESEOC' then 'ESEOC'
+	when theat.LocationName =  'IPS South Theatres Surgical Hub' then 'GSH' -- 'IPS Green Surgical Hub' then 'GSH'
+	when theat.LocationName = 'ESNEFT IPSWICH HOSPITAL' then 'IPS'
+	when theat.LocationName = 'ESNEFT COLCHESTER HOSPITAL' then 'COL'
+	else theat.LocationName end 
+,theat.LocationName
+,s.SessionScheduledStartInstant 
+,s.TheatreSessionID 
+,theat.DepartmentName 
+,theat.Name 
+,s.SessionOwnerSpecialtyOwnedList
+,s.SessionOwnerSurgeonList 
+,case when SessionOwnerSpecialtyOwnedList in ('Emergency','Trauma Surgery') then 'Non-Elective' 
+	when s.SessionLength >= 1439 then 'Non-Elective' 
+	else 'Elective' end 
+,Cons.PrimarySpecialty
+,s.SessionLength 
+,case when (
+	s.SessionOwnerSpecialtyOwnedList in ('Emergency','Trauma Surgery') 
+	or s.SessionLength >= 700
+	or r.Name in ('Angio Suite (IRCA)','COL ELMSTEAD ENDOSCOPY','COL ELMSTEAD THEATRE MTR1','IPS UROLOGY INVESTIGATIONS SUITE','UROLOGY INVESTIGATIONS SUITE') -- ('ENDO1','ENDO2','MTR1','Angio','ECCTR1','WIVTR1','COPTR1','UROLINVESTIGATIONS')
+	)
+	then 0 
+	else 1 end 
+,s.SessionScheduledStartInstant 
+,s.SessionStartTime 
+,s.SessionScheduledEndInstant 
+,s.SessionEndTime 
+,s.SessionCancellationInstant
+,s.IsCancelledSession 
+,s.SessionCreatedInstant
+,Cons.ProviderNationalCode
+,Cons.Name
+
+HAVING
+(
+    sum(datediff(minute, c.ScheduledInTheatreInstant, c.ScheduledOutofTheatreInstant)) IS NULL
+    --OR
+    --sum(datediff(minute, c.ScheduledInTheatreInstant, c.ScheduledOutofTheatreInstant)) * 1.0
+    --/ datediff(minute, s.SessionScheduledStartInstant, s.SessionScheduledEndInstant) < 0.5
+)
+
+order by s.SessionScheduledStartInstant;
+

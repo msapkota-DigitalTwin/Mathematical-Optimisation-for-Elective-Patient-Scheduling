@@ -1,0 +1,9 @@
+# None required can be commented(stopped) with #
+ 
+RegressionPipeline&ElNet
+
+#GradientBoostingRegressor
+
+#BayesianRidge
+
+Last10Mean
